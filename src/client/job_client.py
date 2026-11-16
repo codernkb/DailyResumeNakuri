@@ -76,17 +76,12 @@ APPLY_SRC_MAP = {
 # This token is generated inside Naukri's obfuscated JS bundle and changes each
 # browser session. Without a valid token the API returns 403 Forbidden.
 #
-# Harvesting tokens:
-#   1. Run: python get_Nkparam.py
-#      Opens Chrome, captures nkparam from network logs, appends to nkPool.txt.
-#   2. Collect roughly 100 tokens for light usage, ~1000 for heavy usage.
+# nkparam tokens are harvested by opening Chrome with remote debugging enabled,
+# navigating to a Naukri search page, and capturing the header from the network
+# logs via CDP. See learning.md for the full reverse-engineering notes.
 #
-# Using the pool:
-#   self.pool = open("nkPool.txt").read().splitlines()
-#
-# Token expiry:
-#   Tokens typically last a few hours. On 403, rotate to the next token.
-#   If all tokens fail, regenerate the pool.
+# Tokens are stored in nkPool.txt (one per line) and consumed from NkparamDB
+# (nkparams.db). Tokens typically last a few hours; on 403 the pool rotates.
 #
 # Note: do not commit nkPool.txt. Add it to .gitignore.
 # ----------------------------------------------------------------------------------
@@ -104,7 +99,7 @@ APPLY_SRC_MAP = {
 
 class NaukriJobClient:
 
-    def __init__(self, login_client: NaukriLoginClient, use_pool: bool = False):
+    def __init__(self, login_client: NaukriLoginClient, use_pool: bool = False, config: dict = None):
         if not login_client.session:
             raise NaukriAuthError("Login required")
 
@@ -113,6 +108,7 @@ class NaukriJobClient:
 
         self.pool_idx = 0
         self.use_pool = use_pool
+        self._profile_config = config.get("profile", {}) if config else {}
 
         # Seed pool with one pre-captured token as a baseline fallback.
         self.pool = [
@@ -239,23 +235,25 @@ class NaukriJobClient:
         if not sid:
             sid = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "0000000"
 
-        url = f"https://www.naukri.com/jobapi/v1/job/{job_id}"
+        url = f"https://www.naukri.com/jobapi/v4/job/{job_id}"
 
         params = {
-            "microsite": "y",
-            "src":       "jobsearchDesk",
-            "sid":       sid,
-            "xp":        "1",
-            "px":        "1",
+            "microsite":           "y",
+            "brandedConsultantJd": "true",
+            "amboxConsultantData": "true",
+            "src":                 "jobsearchDesk",
+            "sid":                 sid,
         }
 
         headers = self._client._build_headers(auth=True)
-        headers["nkparam"] = self._get_nkparam()
         headers.update({
             "appid":          "121",
             "systemid":       "Naukri",
             "clientid":       "d3skt0p",
             "accept":         "application/json",
+            "gid":            "LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE",
+            # Job pages sign the job id itself; a "srp"-signed token gets 406 "recaptcha required".
+            "nkparam":        generate_nkparam(job_id),
             "referer":        "https://www.naukri.com/",
             "sec-fetch-site": "same-origin",
             "sec-fetch-mode": "cors",
@@ -277,15 +275,18 @@ class NaukriJobClient:
             raise NaukriParseError(f"Job details fetch failed: {res.status_code} — {res.text}")
 
         try:
-            return res.json()
+            data = res.json()
         except Exception:
             raise NaukriParseError(f"Invalid JSON response: {res.text}")
 
-    def is_external_apply(self, job_id: str, sid: str = "") -> bool:
-        data = self.get_job_details(job_id, sid)
+        if not isinstance(data, dict) or not isinstance(data.get("jobDetails"), dict):
+            raise NaukriParseError(f"Job details response has no jobDetails: {res.text[:200]}")
+        return data
 
-        job = data.get("job") if isinstance(data, dict) else None
-        return isinstance(job, dict) and job.get("responseManager") == "companyUrl"
+    def is_external_apply(self, job_id: str, sid: str = "") -> bool:
+        # Company-site jobs carry both URLs; Naukri-apply jobs have neither.
+        job = self.get_job_details(job_id, sid)["jobDetails"]
+        return bool(job.get("applyRedirectUrl") or job.get("companyApplyUrl"))
 
     # ----------------------------------------------------------------------------------
     # Apply job
@@ -366,21 +367,23 @@ class NaukriJobClient:
         mandatory_skills=None,
         optional_skills=None,
         source="recommended",
+        precomputed_answers: dict | None = None,
     ) -> dict:
 
-        # Static profile values used when generating questionnaire answers.
-        # Update these to match the candidate's actual profile.
+        # Profile values for questionnaire answers — loaded from config.json
+        # so users never need to edit source code.
+        pc = self._profile_config
+        exp_str = str(pc.get("experience_years", 2))
         PROFILE = {
-            "current_ctc":  "5",
-            "expected_ctc": "7",
-            "exp_total":    "2",
-            "exp_node":     "2",
-            "exp_python":   "1",
-            "notice_days":  30,
-            "skills": [
-                "node", "docker", "kubernetes",
-                "aws", "ci/cd", "jenkins", "terraform",
-            ],
+            "current_ctc":  pc.get("current_ctc",  "5"),
+            "expected_ctc": pc.get("expected_ctc", "7"),
+            "exp_total":    exp_str,
+            "exp_node":     exp_str,
+            "exp_python":   exp_str,
+            "notice_days":  pc.get("notice_days",  30),
+            "skills":       [t.lower() for t in pc.get("tech_stack", [
+                "node", "docker", "kubernetes", "aws", "ci/cd", "jenkins", "terraform",
+            ])],
         }
 
         def build_smart_answers(questionnaire: list, profile: dict) -> dict:
@@ -448,7 +451,7 @@ class NaukriJobClient:
 
             return answers
 
-        answers = build_smart_answers(questionnaire, PROFILE)
+        answers = precomputed_answers if precomputed_answers else build_smart_answers(questionnaire, PROFILE)
         logger.debug("Generated answers: %s", answers)
 
         apply_src, logstr_template = APPLY_SRC_MAP.get(source, APPLY_SRC_MAP["recommended"])

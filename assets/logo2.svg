@@ -10,8 +10,8 @@
 
   <!-- title -->
   <text class="title" x="30" y="50" font-size="28" fill="#00FF9C">
-    Nopri
-  </text>
+    NopeRi
+</text>
 
   <!-- subtitle -->
   <text class="text" x="30" y="75" font-size="12" fill="#00DD88">
@@ -38,10 +38,10 @@
   <text class="text" x="280" y="155" font-size="11" fill="#00BB77">recommended jobs</text>
 
   <rect x="410" y="140" width="120" height="22" rx="4" fill="#00CCAA" fill-opacity="0.1" stroke="#00CCAA" stroke-width="0.6"></rect>
-  <text class="text" x="420" y="155" font-size="11" fill="#00CCAA">job search (wip)</text>
+  <text class="text" x="420" y="155" font-size="11" fill="#00CCAA">job search</text>
 
   <rect x="540" y="140" width="100" height="22" rx="4" fill="#00BBCC" fill-opacity="0.1" stroke="#00BBCC" stroke-width="0.6"></rect>
-  <text class="text" x="550" y="155" font-size="11" fill="#00BBCC">auto-apply (wip)</text>
+  <text class="text" x="550" y="155" font-size="11" fill="#00BBCC">auto-apply</text>
 
   <!-- footer -->
   <text class="text" x="30" y="190" font-size="10" fill="#006644">
